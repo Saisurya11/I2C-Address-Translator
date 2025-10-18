@@ -1,0 +1,675 @@
+
+`timescale 1ns / 1ps
+//////////////////////////////////////////////////////////////////////////////////
+// Company: 
+// Engineer: 
+// 
+// Create Date: 12.10.2025 00:49:53
+// Design Name: 
+// Module Name: atr
+// Project Name: 
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// 
+//////////////////////////////////////////////////////////////////////////////////
+////// Code your design here
+//module clk_divider(rst,clk,scl_clk);
+//input clk,rst;
+//output reg scl_clk=0;
+//integer count=0;
+
+//parameter in_clk=50_000_000; //50mhz
+//parameter i2c_clk=100_000; //10khz
+//parameter cycles=(in_clk/i2c_clk) -1;
+
+//always@(posedge clk) begin
+//if(rst) begin
+//scl_clk<=0;
+//count<=0;
+//end
+//else begin
+//if(cycles/2==count) begin
+//scl_clk<=~scl_clk;
+//count<=0;
+//end
+//else
+//count<=count+1;
+//end
+//end
+//endmodule
+
+`define N 3
+module i2c_atr(sda_in,scl_in,sda_out,scl_out,en,ready,translation_byte);
+//parameter `ports=3;
+
+inout sda_in;
+inout scl_in;
+
+inout [`N-1:0] sda_out,scl_out;
+
+output [`N-1:0]ready;
+
+input [`N-1:0]en;
+
+input [6:0]translation_byte;
+
+wire [7:0] byte_buffer[`N-1:0];
+
+wire scl_0;
+assign scl_0=scl_in;
+integer count=0;
+
+reg flag=0;
+
+reg r_st_bit_current,r_st_bit_prev;
+
+always@(sda_in, r_st_bit_current) begin
+r_st_bit_current<=sda_in;
+r_st_bit_prev<=r_st_bit_current;
+end
+
+wire st_bit;
+assign st_bit=(sda_in==0 && scl_in && count==0)?1'b1:1'b0;
+
+wire stop_bit=(sda_in==1 && scl_in && count==0)?1'b1:1'b0;
+
+wire r_st=(r_st_bit_prev==1 && sda_in==0 && flag==1 && count==19)?1'b1:1'b0;
+
+wire [`N-1:0]enables;
+assign enables=en;
+
+integer number;
+integer en_i;
+always@(*) begin
+if(st_bit) begin
+flag=1;
+for(en_i=0;en_i<`N;en_i=en_i+1) begin
+if(enables[en_i]) number=en_i;
+end
+end
+else if(stop_bit)
+flag=0;
+end
+
+genvar i;
+generate
+for(i=0;i<`N;i=i+1) begin
+assign ready[i]=(en[i]==1)?1'b1:1'b0;
+assign byte_buffer[i][6:0]=(en[i]==1)?translation_byte:0;
+end
+endgenerate
+
+reg r_st_flag;
+always@(*) begin
+if(flag==1 && count==19 && r_st==1)
+r_st_flag=1'b1;
+else if(stop_bit)
+r_st_flag=1'b0;
+end
+
+genvar j;
+generate
+for(j=0;j<`N;j=j+1) begin
+
+wire step_1=(flag==1 && number==j && count>=1 && count<=7)?1'b1:1'b0; //perofrms xor
+wire w_r_1=(flag==1 && number==j && count==8)?1'b1:1'b0; //not perform xor and send write_bit 
+wire mem_address =(flag==1 && number==j && count>=10 && count<=17)?1'b1:1'b0; //sending the memory address for the slave
+wire slave_address_r_st= (flag==1 && number==j && count>=20 && count<=26 && r_st_flag); //sending the slave address after the r_start
+wire sending_wr_data= (flag==1 && number==j && count>=20 && count<=26 && r_st_flag==0); //sedning the write data in the normal condition
+wire read_bit_and_master_ack=flag==1 && number==j && (count==27 || count==37)&& r_st_flag;  //capturing the read bit and also getting the ack from the master after reading
+wire default_value_en_applied=(number!=j || count==0) && en[j]==1 ;  //sending the defualt values for the slaves during normal time when no transactions happening
+wire ack_release_and_read_window= ((number==j && count%9==0 && count>=1 && r_st_flag==0) || (count==28 && number==j && r_st_flag) || (count>=29 && count<=36 && number==j));
+wire initial_and_r_st=((flag==1 && number==j &&(count==0 || count==19))); //sending the defualt value to the slave after the atr starts, before we ill drive one, becuase by that time number not detected as it is in always@(*) block
+
+assign sda_out[j]=(step_1)?(sda_in^byte_buffer[number][7-count]):
+(w_r_1 || mem_address || initial_and_r_st || sending_wr_data || read_bit_and_master_ack)?sda_in:
+(slave_address_r_st)?(sda_in^byte_buffer[number][26-count]):
+(default_value_en_applied)?sda_in:(ack_release_and_read_window)?1'bz:(en[j]==1 && number==='dx && count==0)?1'b1:1'bz;
+
+assign scl_out[j]=(flag==1 && j==number)?scl_in:1'b1;
+end
+endgenerate
+
+assign sda_in=((count%9==0 && count>=1 && flag==1 && r_st_flag==0) ||((count>=28 && count<=36 ) && r_st_flag))?sda_out[number]:1'bz;
+
+always@(negedge scl_0) begin
+count<=count+1;
+
+if((count==27 && r_st_flag==0) || (r_st_flag==1 && count==37))
+count<=0;
+end
+endmodule
+
+//module i2c_slave(rst,sda,scl);
+//inout sda,scl;
+//input rst;
+
+//parameter SLAVE_ADDR=7'b001_1100;
+
+//parameter IDLE=9'b0_0000_0001;
+//parameter READ_ADDR=9'b0_0000_0010;
+//parameter ACK1=9'b0_0000_0100;
+//parameter ADDRESS_READ=9'b0_0000_1000;
+//parameter ACK2=9'b0_0001_0000;
+//parameter WRITE_DATA=9'b0_0010_0000;
+//parameter ACK3=9'b0_0100_0000;
+//parameter READ=9'b0_1000_0000;
+//parameter ACK4=9'b1_0000_0000;
+//reg temp_sda_bit=0;
+
+//integer count=0,count_1=0;
+//(* keep = "true", dont_touch = "true" *) reg [8:0]state_0=IDLE,prev_st=IDLE,temp_state=IDLE,state_1=IDLE;
+
+//reg sda_en=0,scl_en=0,sda_design=0;
+//assign sda=(sda_en)?sda_design:1'bz;
+//reg start_bit=0,stop_bit=0;
+//reg SLAVE_CHK=1'b1;
+//reg [7:0] memory_data=8'b10010010;
+//reg [7:0]memory[255:0];
+//integer i;
+//initial begin
+//for(i=0;i<256;i=i+1) begin
+//memory[i]=(~(i^memory_data));
+//end
+//end
+//always@(posedge rst, negedge sda)
+//begin
+//if(rst) begin
+//start_bit<=0;
+////        state<=IDLE;
+//end
+//else begin
+//if(scl==1 && state_0==IDLE && state_1==IDLE) begin
+//  $display("DESIGN: %0t: negedge_start",$time);
+//  start_bit<=1;
+//end
+//else
+//  start_bit<=0;
+//end
+//end
+
+//always@(start_bit,state_1) begin
+//if(start_bit)
+//state_0<=READ_ADDR;
+//else if(state_1==ACK1)
+//state_0<=IDLE;
+//end
+
+//always@(posedge rst, posedge sda)
+//begin
+//if(rst) begin
+//stop_bit<=0;
+//end
+//else begin
+//if(scl==1 && state_0==IDLE && state_1==IDLE) begin
+//  $display("DESIGN: %0t: posedge_stop",$time);
+//  stop_bit<=1;
+//end
+//else
+//  stop_bit<=0;
+//end
+//end
+
+//reg read_ack=0;
+//reg r_st_flag=0,temp_r_st_flag=0;
+//reg [7:0]SLAVE_ADDRESS; //includes the read
+//reg [7:0]ADDRESS; //ADRESS 
+//reg [8:0]DATA_BUFFER; //DATA, when write happens it takes the values from 8:1, if read happens with the rstart the 7:0, will taken in which it consitsts the slaveaddress and read bit
+//reg [7:0]READ_DATA_BUFFER; //DATA
+
+//always@(posedge rst or posedge scl)
+//begin
+//if(rst) begin
+//count<=0;
+////        sda_en<=0;
+//count_1<=0;
+//scl_en<=0;
+//ADDRESS<=0;
+//SLAVE_ADDRESS<=0;
+//DATA_BUFFER<=0;
+//end
+//else begin
+//count<=count+1;
+//case(state_0)
+//  READ_ADDR: begin
+//    count_1<=count_1+1;
+//    $display("DESIGN: %0t: count=%0d, addr_count=%0d, sda=%0d",$time,count_1,8-count_1-1,sda);
+//    SLAVE_ADDRESS[8-count_1-1]<=sda;
+//    if(count_1==7) begin
+//      temp_state<=ACK1;
+//      state_1<=ACK1;
+//    end
+//  end
+//  IDLE: begin
+//    count_1<=0;
+//  end
+//endcase
+//case(state_1)
+//  ACK1: begin
+//    if(SLAVE_CHK) begin
+//      count<=0;
+//      state_1<=ADDRESS_READ;
+//    end
+//    else
+//      state_1<=IDLE;
+//    temp_state<=IDLE;
+//  end
+//  ADDRESS_READ: begin
+//    ADDRESS[7-count]<=sda;
+//    $display("DESIGN: %0t: addr_count=%0d, sda=%0d",$time,count,sda);
+//    if(count==7) begin
+//      state_1<=ACK2;
+//      temp_state<=ACK2;
+//    end
+//  end
+//  ACK2: begin
+//    $display("DESIGN: %0t: ack2",$time);
+//    $display("DESIGN: Address=%b",ADDRESS);
+//    state_1<=WRITE_DATA;
+//    temp_state<=IDLE;
+//    count<=0;
+//  end
+//  WRITE_DATA: begin //write also happens after detecting the r-start slave address also captures here
+//    DATA_BUFFER[8-count]<=sda;
+//    if(count==1 && DATA_BUFFER[8] != temp_sda_bit) begin
+//      $display("DESIGN: capturing");
+//      r_st_flag<=1; 
+//      temp_r_st_flag<=1;
+//      $display("DESIGN: DATA_BUFFER=%b,temp_sda_b=%b",DATA_BUFFER[7],temp_sda_bit);
+//    end
+//    $display("DESIGN: %0t: count=%0d, sda=%0d",$time,count,sda);
+//    if((count==7 && r_st_flag==0) || (count==8 && r_st_flag==1)) begin
+//      state_1<=ACK3;
+//      temp_state<=ACK3;
+//    end
+//  end
+//  ACK3: begin
+//    if(r_st_flag==1) begin
+//      temp_state<=READ;
+//      state_1<=READ;
+//      READ_DATA_BUFFER<=memory[ADDRESS];
+//      $display("DESIGN: data for the address received=%b",memory[ADDRESS]);
+//    end
+//    else begin
+//      temp_state<=IDLE;
+//      state_1<=IDLE;          
+//      $display("DESIGN: data=%b",DATA_BUFFER[8:1]);
+//      memory[ADDRESS]=DATA_BUFFER[8:1];
+//      $display("DESIGN: memory stored data=%b",memory[ADDRESS]);
+//    end
+//    count<=0;
+//  end
+//  READ: begin
+//    if(count==7) begin
+//      temp_state<=IDLE;
+//      state_1<=ACK4;
+//    end
+//  end
+//  ACK4: begin
+//    if(count==8) begin
+//      $display("DESIGN %0t: ACK4_RECEIVED=%0b",$time,sda);
+//      read_ack<=sda;
+//      state_1<=IDLE;
+//      temp_state<=IDLE;
+//      count<=0;
+//    end
+//  end
+//  IDLE: begin
+//    ADDRESS<=0;
+//    DATA_BUFFER<=0;
+//    READ_DATA_BUFFER<=0;
+//    r_st_flag<=0;
+//    temp_r_st_flag<=0;
+//    if(read_ack==1 && temp_r_st_flag==1) begin
+//      read_ack<=0;
+//      $error("DESIGN: Master read error");
+//      $display("DESIGN: READ_ACK=%0b",read_ack);
+//    end
+//    count<=0;
+//  end
+//  default: begin
+//    temp_state<=IDLE;
+//    state_1<=IDLE;
+//  end
+//endcase
+//end
+//end
+
+//always@(posedge scl) begin
+//prev_st<=state_1;
+//if(state_1==IDLE)
+//prev_st<=IDLE;
+//end
+
+//always@(negedge scl, posedge rst)
+//begin
+//if(rst) begin
+//SLAVE_CHK<=1'b1;
+//sda_en<=0;
+//sda_design<=0;
+//end
+//else begin
+
+
+//if(state_1==WRITE_DATA && count==1) begin
+//  $display("DESIGN: %0t: (Applicable only for read, for write neglect can be neglected)negedge value=%b",$time,sda);
+//  temp_sda_bit=sda;
+//end
+
+//case(temp_state)
+//  ACK1: begin
+//    sda_en<=1;
+//    if(SLAVE_ADDR==SLAVE_ADDRESS[7:1]) begin
+//      $display("DESIGN: sda_en=1");
+//      SLAVE_CHK<=1'b1;
+//      sda_design<=1'b0; //ack
+//    end
+//    else begin
+//      SLAVE_CHK=1'b0;
+//      $error("DESIGN: SLAVE_ADDR=%b, read_addr_buffe=%b",SLAVE_ADDR,SLAVE_ADDRESS[7:1]);
+//      $error("DESIGN: SLAVE_ADDRESS_ERROR");
+//      sda_design<=1'b1; //ack
+//    end
+//  end
+//  ACK2: begin
+//    sda_en<=1'b1;
+//    if(ADDRESS <= 255)
+//      sda_design<=1'b0; //ack
+//    else begin
+//      sda_design<=1'b1; //ack
+//      $error("DESIGN: SLAVE_aDDRESS_ERROR");
+//      $error("DESIGN: ADDRESS=%b",ADDRESS);
+//    end
+//  end
+//  ACK3: begin
+//    //             temp_state<=IDLE;
+//    if(r_st_flag==1 && DATA_BUFFER[7:1]==SLAVE_ADDR && DATA_BUFFER[0]==1) begin
+//      sda_en<=1;
+//      sda_design<=1'b0; //ack
+//    end
+//    else if(r_st_flag==1 && (DATA_BUFFER[7:1]!=SLAVE_ADDR || DATA_BUFFER[0]!=1)) begin
+//      sda_en<=1;
+//      $display("DESIGN: SLAVE_ADDR=%0b, DATA_BUFFER=%b",SLAVE_ADDR,DATA_BUFFER);
+//      $error("DESIGN: WRONG ADDRESS");
+//      sda_design<=1'b1; //ack
+//    end
+//    else begin //normal write ack
+//      sda_en<=1;
+//      sda_design<=1'b0; //ack
+//    end 
+//  end
+//  READ: begin          
+//    sda_en<=1;
+//    sda_design<=READ_DATA_BUFFER[7-count];
+//    $display("DESIGN: %0t: negedge value=%0d count=%0d",$time,READ_DATA_BUFFER[7-count],count);
+//  end
+//  default: begin
+//    sda_en<=0;
+//  end
+//endcase
+//end
+//end
+//endmodule
+
+//// Code your testbench here
+//// or browse Examples
+//module tb;
+//reg rst,clk;
+//wire scl_clk;
+
+//integer match=0,mis_match=0;
+////clock divider section
+//clk_divider dut1(rst,clk,scl_clk);
+//initial begin
+//rst=0;
+//clk=0;
+//@(posedge clk);
+//rst=1;
+//@(posedge clk);
+//@(posedge clk);
+//rst=0;
+//end
+
+////  initial begin
+////    $dumpfile("dump.vcd");
+////    $dumpvars(0,rst,clk,scl_clk, dut.sda_out[1],dut.scl_out[1],dut.en[1],dut.translation_byte,dut.NUMBER,dut.translation_buffer,dut.count,tb);
+
+////  end
+
+//initial begin
+//#1000000;
+//$finish;
+//end
+
+////50mhz_clk
+//always #10 clk=~clk;
+//// always #1 clk=~clk; //to handle more transactions
+
+
+//parameter N=3;
+
+//reg [6:0]translation_byte;
+//reg [N-1:0]en=0;
+//wire [N-1:0]ready;
+
+//wire scl_in,sda_in;
+
+//wire [N-1:0]scl_out,sda_out;
+
+//i2c_atr dut(sda_in,scl_in,sda_out,scl_out,en,ready,translation_byte);
+
+//i2c_slave dut3(.rst(rst),.sda(sda_out[0]),.scl(scl_out[0]));
+//i2c_slave dut4(.rst(rst),.sda(sda_out[1]),.scl(scl_out[1]));
+//i2c_slave dut5(.rst(rst),.sda(sda_out[2]),.scl(scl_out[2]));
+
+
+//reg sda_en,scl_en;
+//reg sda_tb,scl_tb;
+
+
+//reg [6:0]slave_address=7'b1011001;
+//reg [7:0]address=8'b10011001;
+
+//assign sda_in=(sda_en)?sda_tb:1'bz;
+//assign scl_in=(scl_en)?scl_tb:scl_clk;
+
+//initial begin
+//write(10);
+//read(10);
+//write(10);
+//read(10);
+//write(10);
+//read(10);
+//end
+//reg[1:0] en_1;
+//task write(input integer number);
+//repeat(number) begin
+//en_1=($random%3);
+//if(en_1>=3)
+//en_1=2'b01;
+
+//en[en_1]=1'b1;
+//translation_byte=$random;
+//slave_address=translation_byte^7'b001_1100;
+//#100;
+//scl_en=1'b1;
+//scl_tb=1'b1;
+//sda_en=1'b1;
+//sda_tb=1'b1;
+//#100;
+//@(posedge scl_clk);
+//sda_tb=1'b0;
+//scl_en=1'b0;
+
+//for(integer j=0;j<7;j=j+1) begin
+//@(negedge scl_clk);
+//#1000;
+//sda_en=1'b1;
+//sda_tb=slave_address[6-j];
+//end
+
+//@(negedge scl_clk);
+//sda_en=1'b1;
+//sda_tb=1'b0;
+
+//@(negedge scl_clk);
+//sda_en=1'b0;
+
+////     @(negedge scl_clk);
+//$display("TB:%0t sda_in=%0d",$time,sda_in);
+
+//for(integer i=0;i<8;i=i+1) begin
+//@(negedge scl_clk);
+//#1000;
+//sda_en=1'b1;
+//sda_tb=$random;
+//end
+
+//@(negedge scl_clk);
+//sda_en=1'b0;
+
+//for(integer i=0;i<8;i=i+1) begin
+//@(negedge scl_clk);
+//#1000;
+//sda_en=1'b1;
+//sda_tb=$random; //temporaly we are considering it as a data
+//end
+
+//@(negedge scl_clk);
+//sda_en=1'b0;
+
+//@(negedge scl_clk);
+//sda_en=1'b1;
+
+//@(posedge scl_clk);
+//scl_en=1'b1;
+//scl_tb=1'b1;
+//#2000;
+//sda_en=1'b1;
+//sda_tb=1'b1;
+//#100;
+//en[en_1]=1'b0;
+//#1000;
+//end
+//endtask
+
+//reg [7:0] read_buffer;
+
+//task read(input integer n);
+//repeat(n) begin
+//en_1=($random%3);
+//if(en_1>=3)
+//en_1=2'b01;
+
+//en[en_1]=1'b1;
+//translation_byte=$random;
+//slave_address=translation_byte^7'b001_1100;
+//#100;
+//scl_en=1'b1;
+//scl_tb=1'b1;
+//sda_en=1'b1;
+//sda_tb=1'b1;
+//#100;
+//@(posedge scl_clk);
+//sda_tb=1'b0;
+//scl_en=1'b0;
+
+//for(integer j=0;j<7;j=j+1) begin
+//@(negedge scl_clk);
+//#1000;
+//sda_en=1'b1;
+//sda_tb=slave_address[6-j];
+//end
+
+////write bit
+//@(negedge scl_clk);
+//sda_en=1'b1;
+//sda_tb=1'b0;
+
+//@(negedge scl_clk);
+//sda_en=1'b0;
+
+////     @(negedge scl_clk);
+//$display("TB:%0t sda_in=%0d",$time,sda_in);
+
+////address
+//for(integer i=0;i<8;i=i+1) begin
+//@(negedge scl_clk);
+//#1000;
+//sda_en=1'b1;
+//sda_tb=$random;
+//end
+
+////ack2
+//@(negedge scl_clk);
+//sda_en=1'b0;
+
+////r-start
+//@(negedge scl_clk);
+//sda_en=1'b1;
+//sda_tb=1'b0;
+//#2000;
+//sda_en=1'b1;
+//sda_tb=1'b1;
+//@(posedge scl_clk);
+//#2000;
+//sda_tb=1'b0;
+
+////slave_Address
+//for(integer j=0;j<7;j=j+1) begin
+//@(negedge scl_clk);
+//#1000;
+//sda_en=1'b1;
+//sda_tb=slave_address[6-j];
+//end
+
+////read_bit
+//@(negedge scl_clk);
+//sda_en=1'b1;
+//sda_tb=1'b1;
+
+//@(negedge scl_clk);
+//sda_en=1'b0;
+//@(negedge scl_clk);
+//sda_en=1'b0;
+////read_data
+//for(integer i=0;i<8;i=i+1) begin
+//@(posedge scl_clk);
+//#1000;
+//read_buffer[7-i]=sda_in;
+//end
+//$display("TB:%0t design data froms slave=%0h",$time,read_buffer);
+////master ack
+//@(negedge scl_clk);
+//sda_en=1'b1;
+//sda_tb=1'b0;
+//read_buffer=0;
+//@(negedge scl_clk);
+//sda_en=1'b1;
+//@(posedge scl_clk);
+//scl_en=1'b1;
+//scl_tb=1'b1;
+//#2000;
+//sda_en=1'b1;
+//sda_tb=1'b1;
+//#100;
+//en[en_1]=1'b0;
+//#1000;
+//end
+//endtask
+
+////flag==1 && count==27 && j==number && r_st_bit
+//always@(*) begin
+//if(dut.count>=26 && dut.count<=28) begin
+//$display("TB: %0t count=%0d, flag=%0d,j=%0d,r_st_bit=%0d",$time,dut.count,dut.flag,dut.number,dut.r_st_flag);
+//end
+//end
+//endmodule
+
